@@ -5,6 +5,7 @@ import type {
   SessionSummary,
   ContextBlock,
   ProjectProfile,
+  MemorySlot,
 } from "../types.js";
 import { KV } from "../state/schema.js";
 import { StateKV } from "../state/kv.js";
@@ -38,22 +39,24 @@ export function registerContextFunction(
       const budget = data.budget || tokenBudget;
       const blocks: ContextBlock[] = [];
 
-      if (isSlotsEnabled()) {
-        const pinned = await listPinnedSlots(kv).catch(() => []);
-        const slotContent = renderPinnedContext(pinned);
-        if (slotContent) {
-          blocks.push({
-            type: "memory",
-            content: slotContent,
-            tokens: estimateTokens(slotContent),
-            recency: Date.now(),
-          });
-        }
-      }
+      const [pinnedSlots, profile] = await Promise.all([
+        isSlotsEnabled()
+          ? listPinnedSlots(kv).catch(() => [] as MemorySlot[])
+          : Promise.resolve([] as MemorySlot[]),
+        kv
+          .get<ProjectProfile>(KV.profiles, data.project)
+          .catch(() => null),
+      ]);
 
-      const profile = await kv
-        .get<ProjectProfile>(KV.profiles, data.project)
-        .catch(() => null);
+      const slotContent = renderPinnedContext(pinnedSlots);
+      if (slotContent) {
+        blocks.push({
+          type: "memory",
+          content: slotContent,
+          tokens: estimateTokens(slotContent),
+          recency: Date.now(),
+        });
+      }
       if (profile) {
         const profileParts = [];
         if (profile.topConcepts.length > 0) {

@@ -10,6 +10,11 @@ import { KV } from "../state/schema.js";
 import { StateKV } from "../state/kv.js";
 import { recordAccessBatch } from "./access-tracker.js";
 import { logger } from "../logger.js";
+import {
+  isSlotsEnabled,
+  listPinnedSlots,
+  renderPinnedContext,
+} from "./slots.js";
 
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / 3);
@@ -32,6 +37,19 @@ export function registerContextFunction(
     async (data: { sessionId: string; project: string; budget?: number }) => {
       const budget = data.budget || tokenBudget;
       const blocks: ContextBlock[] = [];
+
+      if (isSlotsEnabled()) {
+        const pinned = await listPinnedSlots(kv).catch(() => []);
+        const slotContent = renderPinnedContext(pinned);
+        if (slotContent) {
+          blocks.push({
+            type: "memory",
+            content: slotContent,
+            tokens: estimateTokens(slotContent),
+            recency: Date.now(),
+          });
+        }
+      }
 
       const profile = await kv
         .get<ProjectProfile>(KV.profiles, data.project)

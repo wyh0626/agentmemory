@@ -51,7 +51,15 @@ fly logs --app "$APP" | grep -A1 AGENTMEMORY_SECRET=
 
 You will see exactly one line of the form `AGENTMEMORY_SECRET=<64 hex chars>`.
 Copy it into your client environment (`~/.bashrc`, Claude Desktop config,
-etc.). The secret is never printed again on subsequent boots.
+the viewer unlock prompt, etc.). The secret is never printed again on
+subsequent boots.
+
+If the first-boot log line is no longer available, read the persisted
+secret from the mounted volume:
+
+```bash
+fly ssh console --app "$APP" -C "sh -lc 'cat /data/.hmac'"
+```
 
 ## Verify the deployment
 
@@ -87,10 +95,11 @@ When `AGENTMEMORY_VIEWER_HOST` is non-loopback the viewer enforces two
 extra guards: it refuses to start unless `VIEWER_ALLOWED_HOSTS` is
 explicitly set, and every request to `/agentmemory/*` must present
 `Authorization: Bearer $AGENTMEMORY_SECRET`. Static HTML and the
-favicon are still served unauthenticated. Browser-based viewer UX
-through `fly proxy` is therefore limited until the embedded UI learns
-to send the bearer — use `curl` (with the bearer) against the REST
-endpoints for now.
+favicon are still served unauthenticated. If a proxied viewer request
+gets a 401, the browser UI prompts for `AGENTMEMORY_SECRET` and stores
+it in session storage so subsequent viewer API calls include the bearer.
+Use the value printed in the first-boot logs or read `/data/.hmac`
+inside the machine.
 
 > **Security warning.** Setting `AGENTMEMORY_VIEWER_HOST=0.0.0.0` or
 > `::` turns the viewer into a network-reachable proxy that signs every

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import type { Server } from "node:http";
+import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import {
   buildAllowedHosts,
@@ -145,9 +145,11 @@ describe("startViewerServer host binding", () => {
   const originalOverride = process.env.VIEWER_ALLOWED_HOSTS;
   let server: Server | undefined;
   let logSpy: ReturnType<typeof vi.spyOn>;
+  let warnSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
   });
 
   afterEach(async () => {
@@ -156,6 +158,7 @@ describe("startViewerServer host binding", () => {
       server = undefined;
     }
     logSpy.mockRestore();
+    warnSpy.mockRestore();
     if (originalEnv === undefined) {
       delete process.env.AGENTMEMORY_VIEWER_HOST;
     } else {
@@ -193,6 +196,12 @@ describe("startViewerServer host binding", () => {
     process.env.AGENTMEMORY_VIEWER_HOST = "0.0.0.0";
     process.env.VIEWER_ALLOWED_HOSTS = "viewer.example.com";
     expect(() => startViewerServer(0, null, null)).toThrow(ViewerConfigError);
+    expect(() => startViewerServer(0, null, null)).toThrow(
+      /unset AGENTMEMORY_VIEWER_HOST/,
+    );
+    expect(() => startViewerServer(0, null, null)).toThrow(
+      /set AGENTMEMORY_SECRET/,
+    );
   });
 
   it("refuses to start when bind is non-loopback and VIEWER_ALLOWED_HOSTS is empty", () => {
@@ -201,6 +210,12 @@ describe("startViewerServer host binding", () => {
     expect(() =>
       startViewerServer(0, null, null, "test-secret"),
     ).toThrow(ViewerConfigError);
+    expect(() => startViewerServer(0, null, null, "test-secret")).toThrow(
+      /set VIEWER_ALLOWED_HOSTS/,
+    );
+    expect(() => startViewerServer(0, null, null, "test-secret")).toThrow(
+      /unset AGENTMEMORY_VIEWER_HOST/,
+    );
   });
 
   it("returns 401 for non-Bearer API calls when bind is non-loopback", async () => {
@@ -265,5 +280,51 @@ describe("startViewerServer host binding", () => {
     // The HTML shell stays unauthenticated so a browser can fetch it;
     // the embedded JS still needs the bearer for the data calls.
     expect(res.status).not.toBe(401);
+  });
+
+  it("logs non-loopback bind mode and inbound auth requirements", async () => {
+    process.env.AGENTMEMORY_VIEWER_HOST = "0.0.0.0";
+    process.env.VIEWER_ALLOWED_HOSTS = "localhost:3113,[::1]:3113";
+    server = startViewerServer(0, null, null, "test-secret-xyz");
+    await waitForListening(server);
+
+    expect(logSpy).toHaveBeenCalledWith(
+      expect.stringContaining("bound to 0.0.0.0; inbound Bearer required"),
+    );
+    expect(logSpy).toHaveBeenCalledWith(
+      expect.stringContaining("allowed Host headers: localhost:3113, [::1]:3113"),
+    );
+  });
+
+  it("does not retry EADDRINUSE when bind is non-loopback", async () => {
+    process.env.AGENTMEMORY_VIEWER_HOST = "0.0.0.0";
+    process.env.VIEWER_ALLOWED_HOSTS = "localhost:3113";
+
+    const blocker = createServer((_req, res) => res.end("busy"));
+    await new Promise<void>((resolve) => blocker.listen(0, "0.0.0.0", resolve));
+    const blockedPort = (blocker.address() as AddressInfo).port;
+
+    try {
+      const viewer = startViewerServer(
+        blockedPort,
+        null,
+        null,
+        "test-secret-xyz",
+      );
+      const err = await new Promise<NodeJS.ErrnoException>((resolve) =>
+        viewer.once("error", resolve),
+      );
+      expect(err.code).toBe("EADDRINUSE");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(viewer.listening).toBe(false);
+      expect(logSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining(`fallback from ${blockedPort}`),
+      );
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("not retrying because non-loopback viewer binds"),
+      );
+    } finally {
+      await new Promise<void>((resolve) => blocker.close(() => resolve()));
+    }
   });
 });
